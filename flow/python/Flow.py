@@ -126,6 +126,9 @@ class Flow(object):
         """
         if self.params.gdsLayerMappingFile == "":
             return
+        if not hasattr(magicalFlow, "translateGdsLayer"):
+            print("[W] magicalFlow.translateGdsLayer unavailable; skipping GDS layer translation")
+            return
         gdsMappingFile = self.params.gdsLayerMappingFile
         magicalFlow.translateGdsLayer(gdsMappingFile, inputGds, outputGds)
         print("Right", gdsMappingFile)

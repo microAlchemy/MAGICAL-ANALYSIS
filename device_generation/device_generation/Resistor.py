@@ -1,0 +1,275 @@
+import gdspy
+from .basic import basic
+from .glovar import tsmc40_glovar as glovar
+from .Pin import Pin
+
+# Standard Rules from glovar.py
+min_w = glovar.min_w
+layer = glovar.layer
+sp = glovar.sp
+en = glovar.en
+ex = glovar.ex
+NWELL_GR = glovar.NWELL_GR
+NW_OD = glovar.NW_OD
+NP_OD = glovar.NP_OD
+OD_W = glovar.OD_W
+GRID = glovar.GRID
+
+class Resistor:
+    def __init__(self, series, name, w, l, seg_num, seg_space=0.4, attr=[]):
+    # seg_space will be hornoured, users should check if spacing satisfy grid 
+        self.series = series
+        self.name = name
+        self.w = w
+        self.l = l
+        self.seg_num = seg_num
+        self.seg_space = seg_space
+        self.plus = Pin('PLUS')
+        self.minus = Pin('MINUS')
+        self.cell = gdspy.Cell(name, True) 
+        self.res_core()
+        self.flatten()
+        self.print_pins()
+
+    def pin(self):
+        return [self.plus, self.minus]
+
+    def flatten(self):
+        if self.origin:
+            self.origin = [self.origin[0] + 0.5*min_w['M1'], self.origin[1] + 0.5 * min_w['M1']]
+            temp = gdspy.CellReference(self.cell, (-self.origin[0],-self.origin[1]))
+            self.cell = gdspy.Cell(self.name, True)
+            self.cell.add(temp)
+            self.plus.adjust(self.origin)
+            self.minus.adjust(self.origin)
+            self.origin = None
+        self.cell.flatten()
+
+# Compatible with gdspy
+    def to_gds(self, *args):
+        """
+        @param first: outfile
+        @param second: multiplier
+        The reason for have varidic length of variables:
+        different versions of gdspy have different interfaces for this callback function.
+        What is silly is that the previous version is ( multiplier)
+        but the new version becomes (outfile, multiplier).
+        So it is not very suitable to just give the second argument a default None.
+        """
+        if len(args) == 1:
+            return self.cell.to_gds(args[0])
+        elif len(args) == 2:
+            return self.cell.to_gds(args[0], args[1])
+
+    def res_core(self):
+# Poly Resistor Core
+    # Poly Shape Core
+        x_pos1 = en['PO']['CO'] - 0.5 * (min_w['M1'] - min_w['CO'])
+        x_pos1 = 0
+        poly_l = 2 * (en['PO']['CO'] + sp['CO']['RPO'] + min_w['CO']) + self.l
+        m1_vert_space = poly_l - 2 * (min_w['M1'] + x_pos1)
+        poly_cell = gdspy.Cell('POLY', True)
+        self.origin = [x_pos1, 0]
+    # RPDMY Layer
+        self.rpdmy_x1 = en['PO']['CO'] + min_w['CO'] + sp['CO']['RPO']
+        self.rpdmy_x2 = self.rpdmy_x1 + self.l
+        rpdmy_shape = gdspy.Rectangle((self.rpdmy_x1, 0), (self.rpdmy_x2, self.w), layer['RPDMY'], datatype=0)
+        poly_cell.add(rpdmy_shape)
+    # Contact Shape
+        m1_vert = basic.metal_vert(min_w['M1'], self.w, lay=0, licon=True)
+        m1_shape_h = self.w
+        #m1_shape = gdspy.Rectangle((0,0),(min_w['M1'],m1_shape_h),layer['M1'])
+        #m1_vert.add(m1_shape)
+        m1_vert_ref1 = gdspy.CellReference(m1_vert, (x_pos1, 0))
+        x_pos2 = basic.legal_coord([x_pos1 + m1_vert_space + min_w['M1'],0],self.origin,3)[0]
+        m1_vert_ref2 = gdspy.CellReference(m1_vert, (x_pos2, 0))
+        # Moved add poly shape here
+        poly_l = poly_l + x_pos2 - (x_pos1 + m1_vert_space + min_w['M1'])
+        poly_shape = gdspy.Rectangle((0, 0), (poly_l, self.w), layer['PO'])
+        poly_cell.add(poly_shape)
+        poly_cell_bot = poly_cell.copy('POLY_BOT', True)
+        poly_cell_top = poly_cell.copy('POLY_TOP', True)
+        poly_cell.add(m1_vert_ref1)
+        poly_cell.add(m1_vert_ref2)
+        m1_vert = basic.metal_vert(min_w['M1'], self.w)
+        m1_vert_ref3 = gdspy.CellReference(m1_vert, (x_pos1, 0))
+        m1_vert_ref4 = gdspy.CellReference(m1_vert, (x_pos2, 0))
+        if self.series:
+            poly_cell_bot.add(m1_vert_ref3)
+            if self.seg_num == 1:
+                poly_cell_bot.add(m1_vert_ref4)
+            else:
+                poly_cell_bot.add(m1_vert_ref2)
+            poly_cell_top.add(m1_vert_ref1)
+            poly_cell_top.add(m1_vert_ref4)
+        else:
+            poly_cell.add(m1_vert_ref3)
+            poly_cell.add(m1_vert_ref4)
+            poly_cell_bot.add(m1_vert_ref3)
+            poly_cell_bot.add(m1_vert_ref4)
+            poly_cell_top.add(m1_vert_ref3)
+            poly_cell_top.add(m1_vert_ref4)
+    # Poly Array for seg_num
+        poly_space = self.w + self.seg_space
+        if self.seg_num > 2:
+            poly_array = gdspy.CellArray(poly_cell, 1, self.seg_num-2, [0, poly_space], origin=(0, poly_space))
+            self.cell.add(poly_array)
+        if self.seg_num > 1:
+            if self.seg_num % 2:
+                poly_res_1 = gdspy.CellReference(poly_cell_top, (0, (self.seg_num-1)*poly_space))
+            else:
+                poly_res_1 = gdspy.CellReference(poly_cell_bot, (0, (self.seg_num-1)*poly_space))
+            self.cell.add(poly_res_1)
+        poly_res_2 = gdspy.CellReference(poly_cell_bot, (0, 0))
+        self.cell.add(poly_res_2)
+    # M1 Connection for series/parallel
+        #m1_connect = gdspy.Cell('M1_CON', True)
+        #m1_con_shape = gdspy.Rectangle((0, 0), (min_w['M1'], self.seg_space), layer['M1'])
+        #m1_connect.add(m1_con_shape)
+        delta = (min_w['M1'] - min_w['LI'])*0.5
+        if self.series and self.seg_num > 1:
+            #m1_num_1 = int((self.seg_num-1)/2)
+            #m1_num_2 = int(self.seg_num/2)
+            #m1_con_array_1 = gdspy.CellArray(m1_connect, 1, m1_num_1, [0, 2*poly_space], (x_pos1, self.w+poly_space))
+            #m1_con_array_2 = gdspy.CellArray(m1_connect, 1, m1_num_2, [0, 2*poly_space], (x_pos2, self.w))
+            #self.cell.add(m1_con_array_1)
+            #self.cell.add(m1_con_array_2)
+            # Check every metal legalization
+            m1_num_1 = int(self.seg_num/2) + 1
+            m1_num_2 = int((self.seg_num+1)/2)
+            for i in range(m1_num_1):
+                if i == m1_num_1 - 1 and self.seg_num % 2 == 0:
+                    y1 = 2*(self.w + self.seg_space)*(i-1) + self.w + self.seg_space
+                    m1_ll_y = y1 #basic.legal_coord((x_pos1,y1),self.origin,1)[1]
+                    m1_ur_y = self.w + y1 #basic.legal_len(self.w+y1-m1_ll_y) + m1_ll_y
+                    m1_connect = gdspy.Rectangle((x_pos1+delta,m1_ll_y),(x_pos1+min_w['M1']-delta,m1_ur_y),layer['LI'])
+                    m1_ll_y_1 = m1_ll_y
+                    m1_ur_y_1 = m1_ur_y
+                elif i == 0:
+                    m1_ur_y = self.w #basic.legal_len(self.w)
+                    m1_connect = gdspy.Rectangle((x_pos1+delta,0),(x_pos1+min_w['M1']-delta,m1_ur_y),layer['LI'])
+                else:
+                    y1 = 2*(self.w + self.seg_space)*(i-1) + self.w + self.seg_space
+                    m1_ll_y = y1 #basic.legal_coord((x_pos1,y1),self.origin,1)[1]
+                    m1_ur_y = 2*self.w+self.seg_space+y1 #basic.legal_len(2*self.w+self.seg_space+y1-m1_ll_y) + m1_ll_y
+                    m1_connect = gdspy.Rectangle((x_pos1+delta,m1_ll_y),(x_pos1+min_w['M1']-delta,m1_ur_y),layer['LI'])
+                    if i == m1_num_1 - 1:
+                        m1_ll_y_1 = m1_ll_y
+                        m1_ur_y_1 = m1_ur_y
+                self.cell.add(m1_connect)
+            for i in range(m1_num_2):
+                if i == m1_num_2 - 1 and self.seg_num % 2 != 0:
+                    y1 = 2*(self.w + self.seg_space)*i
+                    m1_ll_y = y1 #basic.legal_coord((x_pos2,y1),self.origin,1)[1]
+                    m1_ur_y = self.w+y1 #basic.legal_len(self.w+y1-m1_ll_y) + m1_ll_y
+                    m1_connect = gdspy.Rectangle((x_pos2+delta,m1_ll_y),(x_pos2+min_w['M1']-delta,m1_ur_y),layer['LI'])
+                    m1_ll_y_2 = m1_ll_y
+                    m1_ur_y_2 = m1_ur_y
+                else:
+                    y1 = 2*(self.w + self.seg_space)*i
+                    m1_ll_y = y1 #basic.legal_coord((x_pos1,y1),self.origin,1)[1]
+                    m1_ur_y = 2*self.w+self.seg_space+y1 #basic.legal_len(2*self.w+self.seg_space+y1-m1_ll_y) + m1_ll_y
+                    m1_connect = gdspy.Rectangle((x_pos2+delta,m1_ll_y),(x_pos2+min_w['M1']-delta,m1_ur_y),layer['LI'])
+                    if i == m1_num_2 - 1:
+                        m1_ll_y_2 = m1_ll_y
+                        m1_ur_y_2 = m1_ur_y
+                self.cell.add(m1_connect)
+        #elif not self.series and self.seg_num > 1:
+        else:
+            y1 = (self.seg_num-1)*(self.w+self.seg_space)+self.w
+            m1_ur_y = y1 #basic.legal_len(y1)
+            m1_connect1 = gdspy.Rectangle((x_pos1+delta,0),(x_pos1+min_w['M1']-delta,m1_ur_y),layer['LI'])
+            self.cell.add(m1_connect1)
+            m1_connect2 = gdspy.Rectangle((x_pos2+delta,0),(x_pos2+min_w['M1']-delta,m1_ur_y),layer['LI'])
+            self.cell.add(m1_connect2)
+            #m1_con_array_1 = gdspy.CellArray(m1_connect, 1, self.seg_num-1, [0, poly_space], (x_pos1, self.w))
+            #m1_con_array_2 = gdspy.CellArray(m1_connect, 1, self.seg_num-1, [0, poly_space], (x_pos2, self.w))
+            #self.cell.add(m1_con_array_1)
+            #self.cell.add(m1_con_array_2)
+    # Removed
+    ## PP Layer
+    #    self.cell_poly_w = self.w*self.seg_num+self.seg_space*(self.seg_num-1)
+    #    pp_p1 = [-en['PP']['PO'], -en['PP']['PO']]
+    #    pp_p2 = [poly_l+en['PP']['PO'], self.cell_poly_w+en['PP']['PO']]
+    #    pp_shape = gdspy.Rectangle(pp_p1, pp_p2, layer['PP'])
+    #    self.cell.add(pp_shape)
+    ## RH Layer
+    #    rh_p1 = [-en['RH']['PO'], -en['RH']['PO']]
+    #    rh_p2 = [poly_l+en['RH']['PO'], self.cell_poly_w+en['RH']['PO']]
+    #    rh_shape = gdspy.Rectangle(rh_p1, rh_p2, layer['RH'])
+    #    self.cell.add(rh_shape)
+    #    #self.flatten()
+    # Adding Pins
+        if self.seg_num > 1:
+            if self.series and self.seg_num == 2:
+                metal_x = gdspy.Rectangle((0, -2*min_w['M1']), (min_w['M1'], min_w['M1']), layer['M1'])
+                _, hori_y = basic.legal_coord((0, self.w+self.seg_space), self.origin, plane=3) 
+                metal_y = gdspy.Rectangle((0, hori_y), (min_w['M1'], hori_y+3*min_w['M1']), layer['M1'])
+            elif self.series and self.seg_num % 2 == 0:
+                hori_y = (self.w+self.seg_space)*(self.seg_num-1)
+                hori_m = gdspy.Rectangle((0, hori_y),(poly_l, hori_y+self.w), layer['M1'])
+                self.cell.add(hori_m)
+                pin_metal_y = basic.legal_len(hori_y-min_w['M1'])
+                metal_x = gdspy.Rectangle((0, 0), (min_w['M1'], pin_metal_y-2*min_w['M1']), layer['M1'])
+                metal_y = gdspy.Rectangle((poly_l-min_w['M1'], 0), (poly_l, pin_metal_y), layer['M1'])
+                if pin_metal_y < hori_y:
+                    metal_fill = gdspy.Rectangle((poly_l-min_w['M1'], pin_metal_y), (poly_l, hori_y), layer['M1'])
+                    self.cell.add(metal_fill)
+            else:
+                pin_metal_y = basic.legal_len(self.w*self.seg_num+self.seg_space*(self.seg_num-1))
+                metal_x = gdspy.Rectangle((0, 0), (min_w['M1'], pin_metal_y), layer['M1'])
+                metal_y = gdspy.Rectangle((poly_l-min_w['M1'], 0), (poly_l, pin_metal_y), layer['M1'])
+        else:
+            hori_y = max(min_w['M1'], basic.legal_len(self.w))
+            metal_x = gdspy.Rectangle((0, 0), (min_w['M1'], hori_y), layer['M1'])
+            metal_y = gdspy.Rectangle((poly_l-min_w['M1'], 0), (poly_l, hori_y), layer['M1'])
+
+        self.cell.add(metal_x)
+        self.cell.add(metal_y)
+        self.plus.add_shape('M1', metal_x.get_bounding_box())
+        self.minus.add_shape('M1', metal_y.get_bounding_box())
+
+    def print_pins(self):
+        if not (self.plus.check() and self.minus.check()):
+            print("Pin location not legal")
+        #print self.plus, self.minus
+
+    def flip_vert(self):
+        flip_cell = gdspy.Cell(self.cell.name, True)
+        bounding_box = self.cell.get_bounding_box()
+        x_sym_axis = bounding_box[0][0] + bounding_box[1][0]
+        # Floating point error 
+        # Since gdsii precision is 5nm, here we only round to 1nm precision
+        #x_sym_axis = round(x_sym_axis * 10000) / 10000.0
+        polydict = self.cell.get_polygons(by_spec=True)
+        for key in polydict:
+            layer, datatype = key
+            for shape in polydict[key]:
+                x_min = shape[0][0]
+                y_min = shape[0][1]
+                x_max = shape[2][0]
+                y_max = shape[2][1]
+                x_min_s = x_sym_axis - x_max
+                x_max_s = x_sym_axis - x_min
+                new_shape = gdspy.Rectangle([x_min_s,y_min], [x_max_s,y_max], layer, datatype=datatype)
+                flip_cell.add(new_shape)
+        self.cell = flip_cell
+        #self.flatten()
+        self.plus.flip_vert(x_sym_axis)
+        self.minus.flip_vert(x_sym_axis)
+        # Strange issues that need to swap plus and minus pins
+        #temp = self.plus
+        #self.plus = self.minus
+        #self.minus = temp
+
+    def bounding_box(self):
+        if self.origin:
+            assert self.origin == [0, 0], "Cell origin not reset."
+        bounding_box = self.cell.get_bounding_box()
+        ll = list(basic.legal_coord(bounding_box[0],[0,0],1))
+        ur = list(basic.legal_coord(bounding_box[1],[0,0],3))
+        ll[0] = ll[0] - min_w['M1'] - min_w['SP']
+        ll[1] = ll[1] - min_w['M1'] - min_w['SP']
+        ur[0] = ur[0] + min_w['M1'] + min_w['SP']
+        ur[1] = ur[1] + min_w['M1'] + min_w['SP']
+        return [ll,ur]

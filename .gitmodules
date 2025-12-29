@@ -9,7 +9,3 @@
 [submodule "anaroute"]
 	path = anaroute
 	url = https://github.com/baloneymath/anaroute.git
-
-[submodule "device_generation"]
-	path = device_generation
-	url = https://github.com/jayl940712/device_generation.git

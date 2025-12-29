@@ -7,6 +7,13 @@
 
 import os
 import sys
+
+# Prefer the repo-local device_generation package over any system install.
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_device_gen = os.path.join(_repo_root, "device_generation")
+if _device_gen not in sys.path:
+    sys.path.insert(0, _device_gen)
+
 import Params, MagicalDB, Flow
 
 class Magical(object):
